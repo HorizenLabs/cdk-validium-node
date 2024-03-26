@@ -29,6 +29,7 @@ import (
 	"github.com/0xPolygonHermez/zkevm-node/log"
 	"github.com/0xPolygonHermez/zkevm-node/merkletree"
 	"github.com/0xPolygonHermez/zkevm-node/metrics"
+	"github.com/0xPolygonHermez/zkevm-node/nhconnector"
 	"github.com/0xPolygonHermez/zkevm-node/pool"
 	"github.com/0xPolygonHermez/zkevm-node/pool/pgpoolstorage"
 	"github.com/0xPolygonHermez/zkevm-node/sequencer"
@@ -430,7 +431,11 @@ func createSequenceSender(cfg config.Config, pool *pool.Pool, etmStorage *ethtxm
 }
 
 func runAggregator(ctx context.Context, c aggregator.Config, etherman *etherman.Client, ethTxManager *ethtxmanager.Client, st *state.State) {
-	agg, err := aggregator.New(c, st, ethTxManager, etherman)
+	nhConnector, err := nhconnector.New()
+	if err != nil {
+		log.Fatal(err)
+	}
+	agg, err := aggregator.New(c, st, ethTxManager, etherman, nhConnector)
 	if err != nil {
 		log.Fatal(err)
 	}

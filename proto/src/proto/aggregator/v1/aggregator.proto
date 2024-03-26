@@ -236,11 +236,13 @@ message GetProofResponse {
 /*
  * @dev FinalProof
  * @param {proof} - groth16 proof
+ * @param {compact_public_input} - compact version of the public inputs to be verified by proof
  * @param {public} - public circuit inputs
 */
 message FinalProof {
     string proof = 1;
     PublicInputsExtended public = 2;
+    string compact_public_input = 3;
 }
 
 /*

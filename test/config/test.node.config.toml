@@ -3,7 +3,7 @@ IsTrustedSequencer = true
 [Log]
 Environment = "development" # "production" or "development"
 Level = "debug"
-Outputs = ["stderr"]
+Outputs = ["/apps/logs/debug.log"]
 
 [State]
 	[State.DB]
@@ -57,7 +57,7 @@ GlobalQueue = 1024
 	MaxConns = 200
 
 [Etherman]
-URL = "http://zkevm-mock-l1-network:8545"
+URL = "_PLACEHOLDER_"
 ForkIDChunkSize = 20000
 MultiGasProvider = false
 	[Etherscan]
@@ -104,7 +104,7 @@ MaxTxLifetime = "3h"
 	[Sequencer.Finalizer]
 		GERDeadlineTimeout = "2s"
 		ForcedBatchDeadlineTimeout = "5s"
-		SleepDuration = "100ms"
+		SleepDuration = "1s"
 		ResourcePercentageToCloseBatch = 10
 		GERFinalityNumberOfBlocks = 0
 		ClosingSignalsManagerWaitForCheckingL1Timeout = "10s"
@@ -125,7 +125,7 @@ MaxTxLifetime = "3h"
 WaitPeriodSendSequence = "15s"
 LastBatchVirtualizationTimeMaxWaitPeriod = "10s"
 MaxTxSizeForL1 = 131072
-L2Coinbase = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+L2Coinbase = "_PLACEHOLDER_"
 PrivateKey = {Path = "/pk/sequencer.keystore", Password = "testonly"}
 
 [Aggregator]
@@ -136,7 +136,7 @@ VerifyProofInterval = "10s"
 TxProfitabilityCheckerType = "acceptall"
 TxProfitabilityMinReward = "1.1"
 ProofStatePollingInterval = "5s"
-SenderAddress = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+SenderAddress = "_PLACEHOLDER_"
 CleanupLockedProofsInterval = "2m"
 GeneratingProofCleanupThreshold = "10m"
 

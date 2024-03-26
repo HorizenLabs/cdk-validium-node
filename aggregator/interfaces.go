@@ -8,6 +8,7 @@ import (
 	ethmanTypes "github.com/0xPolygonHermez/zkevm-node/etherman/types"
 	"github.com/0xPolygonHermez/zkevm-node/ethtxmanager"
 	"github.com/0xPolygonHermez/zkevm-node/state"
+	substrateTypes "github.com/centrifuge/go-substrate-rpc-client/v4/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/jackc/pgx/v4"
 )
@@ -62,4 +63,6 @@ type stateInterface interface {
 	DeleteUngeneratedProofs(ctx context.Context, dbTx pgx.Tx) error
 	CleanupGeneratedProofs(ctx context.Context, batchNumber uint64, dbTx pgx.Tx) error
 	CleanupLockedProofs(ctx context.Context, duration string, dbTx pgx.Tx) (int64, error)
+	IsAttestationPublishedOnL1(ctx context.Context, attestationId substrateTypes.U64, dbTx pgx.Tx) (bool, error)
+	DeletePublishedAttestationIds(ctx context.Context, attestationId substrateTypes.U64, dbTx pgx.Tx) error
 }

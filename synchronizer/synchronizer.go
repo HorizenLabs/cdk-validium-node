@@ -19,6 +19,7 @@ import (
 	stateMetrics "github.com/0xPolygonHermez/zkevm-node/state/metrics"
 	"github.com/0xPolygonHermez/zkevm-node/state/runtime/executor"
 	"github.com/0xPolygonHermez/zkevm-node/synchronizer/metrics"
+	substrateTypes "github.com/centrifuge/go-substrate-rpc-client/v4/types"
 	"github.com/ethereum/go-ethereum/common"
 	ethTypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/jackc/pgx/v4"
@@ -614,6 +615,11 @@ func (s *ClientSynchronizer) processBlockRange(blocks []etherman.Block, order ma
 				}
 			case etherman.ForkIDsOrder:
 				err = s.processForkID(blocks[i].ForkIDs[element.Pos], blocks[i].BlockNumber, dbTx)
+				if err != nil {
+					return err
+				}
+			case etherman.AddAttestationOrder:
+				err = s.processAttestation(blocks[i].Attestation[element.Pos], blocks[i].BlockNumber, dbTx)
 				if err != nil {
 					return err
 				}
@@ -1292,6 +1298,28 @@ func (s *ClientSynchronizer) processGlobalExitRoot(globalExitRoot etherman.Globa
 		log.Errorf("error storing the GlobalExitRoot in processGlobalExitRoot. BlockNumber: %d, error: %v", globalExitRoot.BlockNumber, err)
 		return err
 	}
+	return nil
+}
+
+func (s *ClientSynchronizer) processAttestation(attestation etherman.Attestation, blockNumber uint64, dbTx pgx.Tx) error {
+	// Store AttestationId
+	pmr := state.AttestationId{
+		BlockNumber:   blockNumber,
+		AttestationId: substrateTypes.NewU64(attestation.AttestationId),
+	}
+
+	err := s.state.AddAttestationId(s.ctx, &pmr, dbTx)
+	if err != nil {
+		log.Errorf("error storing the AttestationId in processAttestation. processAttestation: %d", blockNumber)
+		rollbackErr := dbTx.Rollback(s.ctx)
+		if rollbackErr != nil {
+			log.Errorf("error rolling back state. BlockNumber: %d, rollbackErr: %s, error : %v", blockNumber, rollbackErr.Error(), err)
+			return rollbackErr
+		}
+		log.Errorf("error storing the AttestationId in processAttestation. BlockNumber: %d, error: %v", blockNumber, err)
+		return err
+	}
+	log.Debug("Succesfully added new AttestationId. AttestationId: %d BlockNumber: %d", pmr.AttestationId, pmr.BlockNumber)
 	return nil
 }
 
