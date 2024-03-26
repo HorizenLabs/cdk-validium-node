@@ -20,7 +20,9 @@ import (
 	ethmanTypes "github.com/0xPolygonHermez/zkevm-node/etherman/types"
 	"github.com/0xPolygonHermez/zkevm-node/ethtxmanager"
 	"github.com/0xPolygonHermez/zkevm-node/log"
+	"github.com/0xPolygonHermez/zkevm-node/nhconnector"
 	"github.com/0xPolygonHermez/zkevm-node/state"
+	substrateTypes "github.com/centrifuge/go-substrate-rpc-client/v4/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/jackc/pgx/v4"
 	"google.golang.org/grpc"
@@ -43,6 +45,12 @@ type finalProofMsg struct {
 	finalProof     *prover.FinalProof
 }
 
+type finalProofElement struct {
+	finalProof    finalProofMsg
+	attestationId substrateTypes.U64
+	proofValue    string
+}
+
 // Aggregator represents an aggregator
 type Aggregator struct {
 	prover.UnimplementedAggregatorServiceServer
@@ -61,9 +69,11 @@ type Aggregator struct {
 	finalProof     chan finalProofMsg
 	verifyingProof bool
 
-	srv  *grpc.Server
-	ctx  context.Context
-	exit context.CancelFunc
+	srv             *grpc.Server
+	ctx             context.Context
+	exit            context.CancelFunc
+	nhConnector     nhconnector.NHConnector
+	finalProofQueue FinalProofsQueue
 }
 
 // New creates a new aggregator.
@@ -72,6 +82,7 @@ func New(
 	stateInterface stateInterface,
 	ethTxManager ethTxManager,
 	etherman etherman,
+	nhConnector nhconnector.NHConnector,
 ) (Aggregator, error) {
 	var profitabilityChecker aggregatorTxProfitabilityChecker
 	switch cfg.TxProfitabilityCheckerType {
@@ -92,7 +103,9 @@ func New(
 		TimeSendFinalProofMutex: &sync.RWMutex{},
 		TimeCleanupLockedProofs: cfg.CleanupLockedProofsInterval,
 
-		finalProof: make(chan finalProofMsg),
+		finalProof:      make(chan finalProofMsg),
+		nhConnector:     nhConnector,
+		finalProofQueue: FinalProofsQueue{},
 	}
 
 	return a, nil
@@ -144,7 +157,7 @@ func (a *Aggregator) Start(ctx context.Context) error {
 	a.resetVerifyProofTime()
 
 	go a.cleanupLockedProofs()
-	go a.sendFinalProof()
+	go a.processVerifiedProof()
 
 	<-ctx.Done()
 	return ctx.Err()
@@ -232,6 +245,89 @@ func (a *Aggregator) Channel(stream prover.AggregatorService_ChannelServer) erro
 	}
 }
 
+func (a *Aggregator) processVerifiedProof() {
+
+	for {
+		log.Debug("ProcessVerifiedProof...")
+		if !a.finalProofQueue.IsEmpty() {
+			proofToCheck, err := a.finalProofQueue.Peek()
+			log.Debug("Found proof in queue with attestation id: ", proofToCheck.attestationId)
+			if err != nil {
+				log.Errorf("Failed to retrieve the finalProofQueue peek element")
+			}
+			isProofValidated, err := a.State.IsAttestationPublishedOnL1(a.ctx, proofToCheck.attestationId, nil)
+			if isProofValidated {
+				log.Debug("Proof already validated, move on with sending it!")
+				a.SendFinalProofv2(proofToCheck)
+			}
+
+		}
+		time.Sleep(a.cfg.RetryTime.Duration)
+	}
+}
+
+func (a *Aggregator) SendFinalProofv2(finalProofElement finalProofElement) {
+	ctx := a.ctx
+	proof := finalProofElement.finalProof.recursiveProof
+
+	proofMerklePath := a.nhConnector.GetProofMerklePath(finalProofElement.attestationId, finalProofElement.proofValue)
+	log.Debug("Proof Merkle Path: ", proofMerklePath)
+
+	log.WithFields("proofId", proof.ProofID, "batches", fmt.Sprintf("%d-%d", proof.BatchNumber, proof.BatchNumberFinal))
+	log.Info("Verifying final proof with ethereum smart contract")
+
+	a.startProofVerification()
+
+	finalBatch, err := a.State.GetBatchByNumber(ctx, proof.BatchNumberFinal, nil)
+	if err != nil {
+		log.Errorf("Failed to retrieve batch with number [%d]: %v", proof.BatchNumberFinal, err)
+		a.endProofVerification()
+		return
+	}
+
+	inputs := ethmanTypes.FinalProofInputs{
+		FinalProof:       finalProofElement.finalProof.finalProof,
+		NewLocalExitRoot: finalBatch.LocalExitRoot.Bytes(),
+		NewStateRoot:     finalBatch.StateRoot.Bytes(),
+		AttestationId:    uint64(finalProofElement.attestationId),
+		LeafCount:        uint64(proofMerklePath.NumberOfLeaves),
+		LeafIndex:        uint64(proofMerklePath.LeafIndex),
+		MerklePath:       proofMerklePath.Proof,
+	}
+
+	log.Infof("Final proof inputs: NewLocalExitRoot [%#x], NewStateRoot [%#x]", inputs.NewLocalExitRoot, inputs.NewStateRoot)
+
+	// add batch verification to be monitored
+	sender := common.HexToAddress(a.cfg.SenderAddress)
+	to, data, err := a.Ethman.BuildTrustedVerifyBatchesTxData(proof.BatchNumber-1, proof.BatchNumberFinal, &inputs)
+	if err != nil {
+		log.Errorf("Error estimating batch verification to add to eth tx manager: %v", err)
+		a.handleFailureToAddVerifyBatchToBeMonitored(ctx, proof)
+		return
+	}
+	monitoredTxID := buildMonitoredTxID(proof.BatchNumber, proof.BatchNumberFinal)
+	err = a.EthTxManager.Add(ctx, ethTxManagerOwner, monitoredTxID, sender, to, nil, data, a.cfg.GasOffset, nil)
+	if err != nil {
+		log := log.WithFields("tx", monitoredTxID)
+		log.Errorf("Error to add batch verification tx to eth tx manager: %v", err)
+		a.handleFailureToAddVerifyBatchToBeMonitored(ctx, proof)
+		return
+	}
+
+	// process monitored batch verifications before starting a next cycle
+	a.EthTxManager.ProcessPendingMonitoredTxs(ctx, ethTxManagerOwner, func(result ethtxmanager.MonitoredTxResult, dbTx pgx.Tx) {
+		a.handleMonitoredTxResult(result)
+	}, nil)
+
+	a.resetVerifyProofTime()
+	a.endProofVerification()
+	proofToDelete, err := a.finalProofQueue.Dequeue()
+	if err != nil {
+		log.Errorf("Error in removing proof element from the FinalProofQueue %v", err)
+	}
+	a.State.DeletePublishedAttestationIds(ctx, proofToDelete.attestationId, nil)
+}
+
 // This function waits to receive a final proof from a prover. Once it receives
 // the proof, it performs these steps in order:
 // - send the final proof to L1
@@ -304,8 +400,16 @@ func (a *Aggregator) handleFailureToAddVerifyBatchToBeMonitored(ctx context.Cont
 	a.endProofVerification()
 }
 
+func (a *Aggregator) sendProofToNH(finalProof *prover.FinalProof) nhconnector.PoeNewElement {
+	proofVerifiedEvent, err := a.nhConnector.SendProofToNH(finalProof)
+	if err != nil {
+		log.Errorf("Error in sending proof to NH: %v", err)
+	}
+	return proofVerifiedEvent
+}
+
 // buildFinalProof builds and return the final proof for an aggregated/batch proof.
-func (a *Aggregator) buildFinalProof(ctx context.Context, prover proverInterface, proof *state.Proof) (*prover.FinalProof, error) {
+func (a *Aggregator) buildFinalProof(ctx context.Context, prover proverInterface, proof *state.Proof) (*prover.FinalProof, nhconnector.PoeNewElement, error) {
 	log := log.WithFields(
 		"prover", prover.Name(),
 		"proverId", prover.ID(),
@@ -317,7 +421,7 @@ func (a *Aggregator) buildFinalProof(ctx context.Context, prover proverInterface
 
 	finalProofID, err := prover.FinalProof(proof.Proof, a.cfg.SenderAddress)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get final proof id: %w", err)
+		return nil, nhconnector.PoeNewElement{}, fmt.Errorf("failed to get final proof id: %w", err)
 	}
 	proof.ProofID = finalProofID
 
@@ -326,10 +430,11 @@ func (a *Aggregator) buildFinalProof(ctx context.Context, prover proverInterface
 
 	finalProof, err := prover.WaitFinalProof(ctx, *proof.ProofID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get final proof from prover: %w", err)
+		return nil, nhconnector.PoeNewElement{}, fmt.Errorf("failed to get final proof from prover: %w", err)
 	}
 
 	log.Info("Final proof generated")
+	proofVerifiedEvent := a.sendProofToNH(finalProof)
 
 	// mock prover sanity check
 	if string(finalProof.Public.NewStateRoot) == mockedStateRoot && string(finalProof.Public.NewLocalExitRoot) == mockedLocalExitRoot {
@@ -337,7 +442,7 @@ func (a *Aggregator) buildFinalProof(ctx context.Context, prover proverInterface
 		// prover, use the one captured by the executor instead
 		finalBatch, err := a.State.GetBatchByNumber(ctx, proof.BatchNumberFinal, nil)
 		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve batch with number [%d]", proof.BatchNumberFinal)
+			return nil, nhconnector.PoeNewElement{}, fmt.Errorf("failed to retrieve batch with number [%d]", proof.BatchNumberFinal)
 		}
 		log.Warnf("NewLocalExitRoot and NewStateRoot look like a mock values, using values from executor instead: LER: %v, SR: %v",
 			finalBatch.LocalExitRoot.TerminalString(), finalBatch.StateRoot.TerminalString())
@@ -345,7 +450,7 @@ func (a *Aggregator) buildFinalProof(ctx context.Context, prover proverInterface
 		finalProof.Public.NewLocalExitRoot = finalBatch.LocalExitRoot.Bytes()
 	}
 
-	return finalProof, nil
+	return finalProof, proofVerifiedEvent, nil
 }
 
 // tryBuildFinalProof checks if the provided proof is eligible to be used to
@@ -427,8 +532,8 @@ func (a *Aggregator) tryBuildFinalProof(ctx context.Context, prover proverInterf
 	)
 
 	// at this point we have an eligible proof, build the final one using it
-	finalProof, err := a.buildFinalProof(ctx, prover, proof)
-	if err != nil {
+	finalProof, proofVerifiedEvent, err := a.buildFinalProof(ctx, prover, proof)
+	if err != nil || proofVerifiedEvent.AttestationId == 0 {
 		err = fmt.Errorf("failed to build final proof, %w", err)
 		log.Error(FirstToUpper(err.Error()))
 		return false, err
@@ -440,12 +545,13 @@ func (a *Aggregator) tryBuildFinalProof(ctx context.Context, prover proverInterf
 		recursiveProof: proof,
 		finalProof:     finalProof,
 	}
+	a.finalProofQueue.Enqueue(finalProofElement{finalProof: msg, attestationId: proofVerifiedEvent.AttestationId, proofValue: proofVerifiedEvent.Value.Hex()})
 
-	select {
+	/*select {
 	case <-a.ctx.Done():
 		return false, a.ctx.Err()
 	case a.finalProof <- msg:
-	}
+	}*/
 
 	log.Debug("tryBuildFinalProof end")
 	return true, nil
@@ -920,6 +1026,7 @@ func (a *Aggregator) startProofVerification() {
 
 // endProofVerification set verifyingProof to false to indicate that there is not proof verification in progress
 func (a *Aggregator) endProofVerification() {
+	log.Debug("EndProofVerification...")
 	a.TimeSendFinalProofMutex.Lock()
 	defer a.TimeSendFinalProofMutex.Unlock()
 	a.verifyingProof = false
@@ -927,6 +1034,7 @@ func (a *Aggregator) endProofVerification() {
 
 // resetVerifyProofTime updates the timeout to verify a proof.
 func (a *Aggregator) resetVerifyProofTime() {
+	log.Debug("ResetVerifyProofTime...")
 	a.TimeSendFinalProofMutex.Lock()
 	defer a.TimeSendFinalProofMutex.Unlock()
 	a.TimeSendFinalProof = time.Now().Add(a.cfg.VerifyProofInterval.Duration)

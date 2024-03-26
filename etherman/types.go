@@ -19,6 +19,7 @@ type Block struct {
 	SequencedForceBatches [][]SequencedForceBatch
 	ForkIDs               []ForkID
 	ReceivedAt            time.Time
+	Attestation           []Attestation
 }
 
 // GlobalExitRoot struct
@@ -73,4 +74,9 @@ type ForkID struct {
 	BatchNumber uint64
 	ForkID      uint64
 	Version     string
+}
+
+type Attestation struct {
+	AttestationId uint64
+	MerkleRoot    common.Hash
 }

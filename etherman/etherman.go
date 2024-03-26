@@ -19,9 +19,11 @@ import (
 	"github.com/0xPolygonHermez/zkevm-node/etherman/metrics"
 	"github.com/0xPolygonHermez/zkevm-node/etherman/smartcontracts/cdkdatacommittee"
 	"github.com/0xPolygonHermez/zkevm-node/etherman/smartcontracts/matic"
+	"github.com/0xPolygonHermez/zkevm-node/etherman/smartcontracts/newhorizenproofverifier"
 	"github.com/0xPolygonHermez/zkevm-node/etherman/smartcontracts/polygonzkevm"
 	"github.com/0xPolygonHermez/zkevm-node/etherman/smartcontracts/polygonzkevmglobalexitroot"
 	ethmanTypes "github.com/0xPolygonHermez/zkevm-node/etherman/types"
+	"github.com/0xPolygonHermez/zkevm-node/hex"
 	"github.com/0xPolygonHermez/zkevm-node/log"
 	"github.com/0xPolygonHermez/zkevm-node/state"
 	"github.com/0xPolygonHermez/zkevm-node/test/operations"
@@ -63,6 +65,7 @@ var (
 	acceptAdminRoleSignatureHash                   = crypto.Keccak256Hash([]byte("AcceptAdminRole(address)"))
 	proveNonDeterministicPendingStateSignatureHash = crypto.Keccak256Hash([]byte("ProveNonDeterministicPendingState(bytes32,bytes32)"))
 	overridePendingStateSignatureHash              = crypto.Keccak256Hash([]byte("OverridePendingState(uint64,bytes32,address)"))
+	addAttestation                                 = crypto.Keccak256Hash([]byte("AttestationPosted(uint256,bytes32)"))
 
 	// Proxy events
 	initializedSignatureHash    = crypto.Keccak256Hash([]byte("Initialized(uint8)"))
@@ -101,6 +104,8 @@ const (
 	SequenceForceBatchesOrder EventOrder = "SequenceForceBatches"
 	// ForkIDsOrder identifies an updateZkevmVersion event
 	ForkIDsOrder EventOrder = "forkIDs"
+	// AddAttestationOrder indentifies an addAttestation event
+	AddAttestationOrder EventOrder = "addAttestation"
 )
 
 type ethereumClient interface {
@@ -128,6 +133,8 @@ type L1Config struct {
 	GlobalExitRootManagerAddr common.Address `json:"polygonZkEVMGlobalExitRootAddress"`
 	// Address of the data availability committee contract
 	DataCommitteeAddr common.Address `json:"cdkDataCommitteeContract"`
+	// Address of the NewHorizenProofVerifier contract
+	NewHorizenProofVerifierAddr common.Address `json:"newHorizenProofVerifierContract"`
 }
 
 type externalGasProviders struct {
@@ -137,12 +144,13 @@ type externalGasProviders struct {
 
 // Client is a simple implementation of EtherMan.
 type Client struct {
-	EthClient             ethereumClient
-	ZkEVM                 *polygonzkevm.Polygonzkevm
-	GlobalExitRootManager *polygonzkevmglobalexitroot.Polygonzkevmglobalexitroot
-	Matic                 *matic.Matic
-	DataCommittee         *cdkdatacommittee.Cdkdatacommittee
-	SCAddresses           []common.Address
+	EthClient               ethereumClient
+	ZkEVM                   *polygonzkevm.Polygonzkevm
+	GlobalExitRootManager   *polygonzkevmglobalexitroot.Polygonzkevmglobalexitroot
+	Matic                   *matic.Matic
+	DataCommittee           *cdkdatacommittee.Cdkdatacommittee
+	NewHorizenProofVerifier *newhorizenproofverifier.Newhorizenproofverifier
+	SCAddresses             []common.Address
 
 	GasProviders externalGasProviders
 
@@ -176,8 +184,13 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	newhorizenproofverifier, err := newhorizenproofverifier.NewNewhorizenproofverifier(l1Config.NewHorizenProofVerifierAddr, ethClient)
+	if err != nil {
+		return nil, err
+	}
+
 	var scAddresses []common.Address
-	scAddresses = append(scAddresses, l1Config.ZkEVMAddr, l1Config.GlobalExitRootManagerAddr)
+	scAddresses = append(scAddresses, l1Config.ZkEVMAddr, l1Config.GlobalExitRootManagerAddr, l1Config.NewHorizenProofVerifierAddr)
 
 	gProviders := []ethereum.GasPricer{ethClient}
 	if cfg.MultiGasProvider {
@@ -192,12 +205,13 @@ func NewClient(cfg Config, l1Config L1Config) (*Client, error) {
 	metrics.Register()
 
 	return &Client{
-		EthClient:             ethClient,
-		ZkEVM:                 poe,
-		Matic:                 matic,
-		GlobalExitRootManager: globalExitRoot,
-		DataCommittee:         dataCommittee,
-		SCAddresses:           scAddresses,
+		EthClient:               ethClient,
+		ZkEVM:                   poe,
+		Matic:                   matic,
+		GlobalExitRootManager:   globalExitRoot,
+		DataCommittee:           dataCommittee,
+		SCAddresses:             scAddresses,
+		NewHorizenProofVerifier: newhorizenproofverifier,
 		GasProviders: externalGasProviders{
 			MultiGasProvider: cfg.MultiGasProvider,
 			Providers:        gProviders,
@@ -427,6 +441,9 @@ func (etherMan *Client) processEvent(ctx context.Context, vLog types.Log, blocks
 	case overridePendingStateSignatureHash:
 		log.Debug("OverridePendingState event detected")
 		return nil
+	case addAttestation:
+		log.Debug("addAttestation event detected")
+		return etherMan.addAttestationEvent(ctx, vLog, blocks, blocksOrder)
 	}
 	log.Warn("Event not registered: ", vLog)
 	return nil
@@ -606,13 +623,27 @@ func (etherMan *Client) BuildTrustedVerifyBatchesTxData(lastVerifiedBatch, newVe
 	var newStateRoot [32]byte
 	copy(newStateRoot[:], inputs.NewStateRoot)
 
-	proof, err := convertProof(inputs.FinalProof.Proof)
-	if err != nil {
-		log.Errorf("error converting proof. Error: %v, Proof: %s", err, inputs.FinalProof.Proof)
-		return nil, nil, err
+	const pendStateNum = 0 // TODO hardcoded for now until we implement the pending state feature
+	var merklePath [][32]byte
+	var hexLeaf [32]byte
+	for _, element := range inputs.MerklePath {
+		hex, err := hex.DecodeHex(element)
+		if err != nil {
+			log.Error("Failed to convert the MerklePath to bytes: ", element)
+		}
+		copy(hexLeaf[:], hex)
+		merklePath = append(merklePath, hexLeaf)
 	}
 
-	const pendStateNum = 0 // TODO hardcoded for now until we implement the pending state feature
+	// NH Verification request struct
+	nhVerificationRequest := polygonzkevm.CDKValidiumNewHorizenVerificationRequest{
+		AttestationId: new(big.Int).SetUint64(inputs.AttestationId),
+		MerklePath:    merklePath,
+		LeafCount:     new(big.Int).SetUint64(inputs.LeafCount),
+		Index:         new(big.Int).SetUint64(inputs.LeafIndex),
+	}
+
+	fmt.Printf("NH VERIFICATION REUEST %+v\n", nhVerificationRequest)
 
 	tx, err := etherMan.ZkEVM.VerifyBatchesTrustedAggregator(
 		&opts,
@@ -621,7 +652,7 @@ func (etherMan *Client) BuildTrustedVerifyBatchesTxData(lastVerifiedBatch, newVe
 		newVerifiedBatch,
 		newLocalExitRoot,
 		newStateRoot,
-		proof,
+		nhVerificationRequest,
 	)
 	if err != nil {
 		if parsedErr, ok := tryParseError(err); ok {
@@ -951,6 +982,40 @@ func decodeSequencedForceBatches(txData []byte, lastBatchNumber uint64, sequence
 		}
 	}
 	return sequencedForcedBatches, nil
+}
+
+func (etherMan *Client) addAttestationEvent(ctx context.Context, vLog types.Log, blocks *[]Block, blocksOrder *map[common.Hash][]Order) error {
+	log.Debug("addAttestation event detected")
+	amr, err := etherMan.NewHorizenProofVerifier.ParseAttestationPosted(vLog)
+	if err != nil {
+		return err
+	}
+	attestation := Attestation{
+		AttestationId: amr.AttestationId.Uint64(),
+		MerkleRoot:    amr.ProofsAttestation,
+	}
+
+	if len(*blocks) == 0 || ((*blocks)[len(*blocks)-1].BlockHash != vLog.BlockHash || (*blocks)[len(*blocks)-1].BlockNumber != vLog.BlockNumber) {
+		fullBlock, err := etherMan.EthClient.BlockByHash(ctx, vLog.BlockHash)
+		if err != nil {
+			return fmt.Errorf("error getting hashParent. BlockNumber: %d. Error: %w", vLog.BlockNumber, err)
+		}
+		t := time.Unix(int64(fullBlock.Time()), 0)
+		block := prepareBlock(vLog, t, fullBlock)
+		block.Attestation = append(block.Attestation, attestation)
+		*blocks = append(*blocks, block)
+	} else if (*blocks)[len(*blocks)-1].BlockHash == vLog.BlockHash && (*blocks)[len(*blocks)-1].BlockNumber == vLog.BlockNumber {
+		(*blocks)[len(*blocks)-1].Attestation = append((*blocks)[len(*blocks)-1].Attestation, attestation)
+	} else {
+		log.Error("Error processing addAttestationEvent event. BlockHash:", vLog.BlockHash, ". BlockNumber: ", vLog.BlockNumber)
+		return fmt.Errorf("error processing addAttestationEvent event")
+	}
+	or := Order{
+		Name: AddAttestationOrder,
+		Pos:  len((*blocks)[len(*blocks)-1].Attestation) - 1,
+	}
+	(*blocksOrder)[(*blocks)[len(*blocks)-1].BlockHash] = append((*blocksOrder)[(*blocks)[len(*blocks)-1].BlockHash], or)
+	return nil
 }
 
 func prepareBlock(vLog types.Log, t time.Time, fullBlock *types.Block) Block {
