@@ -3,7 +3,7 @@ IsTrustedSequencer = true
 [Log]
 Environment = "development" # "production" or "development"
 Level = "debug"
-Outputs = ["/apps/logs/debug.log"]
+Outputs = ["/app/logs/debug.log"]
 
 [State]
 	[State.DB]

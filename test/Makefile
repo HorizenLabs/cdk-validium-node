@@ -522,7 +522,7 @@ prod-run: run-nh-node
 	$(RUNPOOLDB)
 	$(RUNEVENTDB)
 	sleep 5
-	$(RUNZKPROVER)
+	#$(RUNZKPROVER)
 	sleep 5
 	$(RUNSYNC)
 	sleep 5
