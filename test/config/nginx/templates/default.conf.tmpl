@@ -82,7 +82,8 @@ server {
     server_name _; # This is just an invalid value which will never trigger on a real hostname.
     listen 80;
     listen 443 ssl;
-
+    http2 off;
+    
     access_log /var/log/openresty/domain-access.log custom;
     error_log /var/log/openresty/domain-error.log;
 
