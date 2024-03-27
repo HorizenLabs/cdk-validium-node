@@ -330,7 +330,7 @@ services:
       - "./config/nginx/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro"
       - "./config/nginx/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro"
       - "./config/nginx/snippets:/etc/nginx/snippets:ro"
-      - "./logs/nginx:/var/log/openresty:rw"
+      - "./nginx_logs/nginx:/var/log/openresty:rw"
       - "nginx-dynamic-conf:/etc/nginx/dynamic-conf:rw"
     tmpfs:
       - /run
