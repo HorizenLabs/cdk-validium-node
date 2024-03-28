@@ -414,6 +414,15 @@ func (c *Client) monitorTx(ctx context.Context, mTx monitoredTx, logger *log.Log
 			err := c.etherman.SendTx(ctx, signedTx)
 			if err != nil {
 				logger.Errorf("failed to send tx %v to network: %v", signedTx.Hash().String(), err)
+				err := c.reviewMonitoredTxNonce(ctx, &mTx, logger)
+				if err != nil {
+					logger.Errorf("failed to review monitored tx nonce: %v", err)
+					return
+				}
+				err = c.storage.Update(ctx, mTx, nil)
+				if err != nil {
+					logger.Errorf("failed to update monitored tx nonce change: %v", err)
+				}
 				return
 			}
 			logger.Infof("signed tx sent to the network: %v", signedTx.Hash().String())
