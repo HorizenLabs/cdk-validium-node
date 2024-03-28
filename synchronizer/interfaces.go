@@ -64,6 +64,7 @@ type stateInterface interface {
 	GetForkIDByBatchNumber(batchNumber uint64) uint64
 	GetStoredFlushID(ctx context.Context) (uint64, string, error)
 	GetBatchL2DataByNumber(ctx context.Context, batchNumber uint64, dbTx pgx.Tx) ([]byte, error)
+	AddAttestationId(ctx context.Context, attestationId *state.AttestationId, dbTx pgx.Tx) error
 }
 
 type ethTxManager interface {

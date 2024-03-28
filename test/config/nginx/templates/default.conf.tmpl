@@ -1,0 +1,137 @@
+# If we receive X-Forwarded-Proto, pass it through; otherwise, pass along the
+# scheme used to connect to this server
+map $http_x_forwarded_proto $proxy_x_forwarded_proto {
+    default $http_x_forwarded_proto;
+    ''      $scheme;
+}
+
+# If we receive X-Forwarded-Port, pass it through; otherwise, pass along the
+# server port the client connected to
+map $http_x_forwarded_port $proxy_x_forwarded_port {
+    default $http_x_forwarded_port;
+    ''      $server_port;
+}
+
+# If we receive Upgrade, set Connection to "upgrade"; otherwise, delete any
+# Connection header that may have been passed to this server
+map $http_upgrade $proxy_connection {
+    default upgrade;
+    '' close;
+}
+
+# Apply fix for very long server names
+server_names_hash_bucket_size 128;
+
+# Set appropriate X-Forwarded-Ssl header
+map $scheme $proxy_x_forwarded_ssl {
+    default off;
+    https on;
+}
+
+log_format custom '$remote_addr - $http_cf_connecting_ip - $remote_user [$time_local] '
+                  '"$request" $status $body_bytes_sent '
+                  '"$http_referer" "$http_user_agent" '
+                  '"$http_x_forwarded_for" $http_cf_ipcountry $request_id $http_host';
+
+access_log off;
+
+# HTTP 1.1 support
+proxy_http_version 1.1;
+proxy_set_header Host $http_host;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection $proxy_connection;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
+proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
+proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
+
+# Mitigate httpoxy attack
+proxy_set_header Proxy "";
+
+# cloudflare whitelist (only allow cloudflare IPs to directly connect)
+include /etc/nginx/dynamic-conf/snippets/cloudflare-whitelist.conf;
+
+# cloudflare realip (restore original client IP)
+include /etc/nginx/dynamic-conf/snippets/cloudflare-restore-origin-ip.conf;
+
+# we use upstream blocks to make load balancing easier in the future
+# for why we use the internal 127.0.0.1 server see https://stackoverflow.com/questions/32845674/setup-nginx-not-to-crash-if-host-in-upstream-is-not-found/70700462#70700462
+upstream backend {
+    server $EXPLORER_NET_IP_ADDRESS:$EXPLORER_NET_UI_PORT fail_timeout=5s max_fails=3;
+    server 127.0.0.1:10082 down;
+    server 127.0.0.1:10082 backup;
+}
+
+server {
+    listen 10082;
+
+    location / {
+        return 503;
+        add_header Content-Type text/plain;
+    }
+
+    # redirect server error pages to the static page /50x.html
+    error_page   500 502 503 504  /50x.html;
+    location = /50x.html {
+        root /usr/local/openresty/nginx/html;
+    }
+}
+
+server {
+    server_name _; # This is just an invalid value which will never trigger on a real hostname.
+    listen 80;
+    listen 443 ssl;
+    http2 off;
+    
+    access_log /var/log/openresty/domain-access.log custom;
+    error_log /var/log/openresty/domain-error.log;
+
+    include /etc/nginx/snippets/ssl_stapling_off.conf;
+    ssl_certificate /etc/nginx/dynamic-conf/certificates/snakeoil.pem;
+    ssl_certificate_key /etc/nginx/dynamic-conf/certificates/snakeoil.key;
+
+    return 444;
+}
+
+server {
+    server_name $NGINX_DOMAIN;
+    listen 80;
+
+    access_log /var/log/openresty/domain-access.log custom;
+    error_log /var/log/openresty/domain-error.log;
+
+    if ($cloudflare_ip != 1) {
+        return 444;
+    }
+
+    return 301 https://$host$request_uri;
+}
+
+server {
+    server_name $NGINX_DOMAIN;
+    listen 443 ssl;
+    http2 off;
+    
+    access_log /var/log/openresty/domain-access.log custom;
+    error_log /var/log/openresty/domain-error.log;
+
+    include /etc/nginx/snippets/ssl.conf;
+    ssl_certificate /etc/nginx/dynamic-conf/certificates/domain-origin.crt;
+    ssl_certificate_key /etc/nginx/dynamic-conf/certificates/domain-origin.key;
+
+    if ($cloudflare_ip != 1) {
+        return 444;
+    }
+
+    # redirect server error pages to the static page /50x.html
+    error_page 500 502 503 504 /50x.html;
+    location = /50x.html {
+        root /usr/local/openresty/nginx/html;$NGINX_AUTHBLOCK
+    }
+
+    location / {
+        default_type application/json;
+        proxy_pass http://backend/;$NGINX_AUTHBLOCK
+    }
+}

@@ -1,7 +1,18 @@
 version: "3.5"
+
+volumes:
+  nginx-dynamic-conf:
+  nh-node-data:
+
 networks:
   default:
     name: zkevm
+  explorer_proxy:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${INTERNAL_NETWORK_SUBNET}
+  inet:
     
 services:
   grafana:
@@ -56,12 +67,13 @@ services:
     environment:
       - ZKEVM_NODE_STATE_DB_HOST=zkevm-state-db
       - ZKEVM_NODE_POOL_DB_HOST=zkevm-pool-db
-      - ZKEVM_NODE_MTCLIENT_URI=${ZKEVM_NODE_MTCLIENT_URI}
-      - ZKEVM_NODE_EXECUTOR_URI=${ZKEVM_NODE_EXECUTOR_URI}
+      - ZKEVM_NODE_MTCLIENT_URI
+      - ZKEVM_NODE_EXECUTOR_URI
     volumes:
       - ./config/test.node.config.toml:/app/config.toml
       - ./config/test.genesis.config.json:/app/genesis.json
       - ./:/datastreamer
+      - ./logs/sequencer:/app/logs
     command:
       - "/bin/sh"
       - "-c"
@@ -73,13 +85,14 @@ services:
     environment:
       - ZKEVM_NODE_STATE_DB_HOST=zkevm-state-db
       - ZKEVM_NODE_POOL_DB_HOST=zkevm-pool-db
-      - ZKEVM_NODE_SEQUENCER_SENDER_ADDRESS=0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
-      - ZKEVM_NODE_MTCLIENT_URI=${ZKEVM_NODE_MTCLIENT_URI}
-      - ZKEVM_NODE_EXECUTOR_URI=${ZKEVM_NODE_EXECUTOR_URI}
+      - ZKEVM_NODE_SEQUENCER_SENDER_ADDRESS
+      - ZKEVM_NODE_MTCLIENT_URI
+      - ZKEVM_NODE_EXECUTOR_URI
     volumes:
       - ./sequencer.keystore:/pk/sequencer.keystore
       - ./config/test.node.config.toml:/app/config.toml
       - ./config/test.genesis.config.json:/app/genesis.json
+      - ./logs/sequence-sender:/app/logs
     command:
       - "/bin/sh"
       - "-c"
@@ -95,11 +108,12 @@ services:
     environment:
       - ZKEVM_NODE_STATE_DB_HOST=zkevm-state-db
       - ZKEVM_NODE_POOL_DB_HOST=zkevm-pool-db
-      - ZKEVM_NODE_MTCLIENT_URI=${ZKEVM_NODE_MTCLIENT_URI}
-      - ZKEVM_NODE_EXECUTOR_URI=${ZKEVM_NODE_EXECUTOR_URI}
+      - ZKEVM_NODE_MTCLIENT_URI
+      - ZKEVM_NODE_EXECUTOR_URI
     volumes:
       - ./config/test.node.config.toml:/app/config.toml
       - ./config/test.genesis.config.json:/app/genesis.json
+      - ./logs/json-rpc:/app/logs
     command:
       - "/bin/sh"
       - "-c"
@@ -113,10 +127,14 @@ services:
       - 9093:9091 # needed if metrics enabled
     environment:
       - ZKEVM_NODE_STATE_DB_HOST=zkevm-state-db
-      - ZKEVM_NODE_AGGREGATOR_SENDER_ADDRESS=0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266
+      - ZKEVM_NODE_AGGREGATOR_SENDER_ADDRESS
+      - NH_WS_URL
+      - NH_RPC_URL
+      - NH_SEED_PHRASE
     volumes:
       - ./config/test.node.config.toml:/app/config.toml
       - ./config/test.genesis.config.json:/app/genesis.json
+      - ./logs/aggregator:/app/logs
     command:
       - "/bin/sh"
       - "-c"
@@ -129,11 +147,12 @@ services:
       - 9095:9091 # needed if metrics enabled
     environment:
       - ZKEVM_NODE_STATE_DB_HOST=zkevm-state-db
-      - ZKEVM_NODE_MTCLIENT_URI=${ZKEVM_NODE_MTCLIENT_URI}
-      - ZKEVM_NODE_EXECUTOR_URI=${ZKEVM_NODE_EXECUTOR_URI}
+      - ZKEVM_NODE_MTCLIENT_URI
+      - ZKEVM_NODE_EXECUTOR_URI
     volumes:
       - ./config/test.node.config.toml:/app/config.toml
       - ./config/test.genesis.config.json:/app/genesis.json
+      - ./logs/sync:/app/logs
     command:
       - "/bin/sh"
       - "-c"
@@ -244,7 +263,7 @@ services:
       - SUBNETWORK=Local Ethereum
       - COIN=ETH
       - ETHEREUM_JSONRPC_VARIANT=geth
-      - ETHEREUM_JSONRPC_HTTP_URL=http://zkevm-mock-l1-network:8545
+      - ETHEREUM_JSONRPC_HTTP_URL
       - DATABASE_URL=postgres://l1_explorer_user:l1_explorer_password@zkevm-explorer-l1-db:5432/l1_explorer_db
       - ECTO_USE_SSL=false
       - MIX_ENV=prod
@@ -270,14 +289,20 @@ services:
   zkevm-explorer-l2:
     container_name: zkevm-explorer-l2
     image: hermeznetwork/zkevm-explorer:latest
-    ports:
-      - 4001:4000
+    networks:
+      explorer_proxy:
+        ipv4_address: ${EXPLORER_NET_IP_ADDRESS}
+      default:
+#    ports:
+#      - "4001:4000"
+    expose:
+      - "${EXPLORER_NET_UI_PORT}"
     environment:
       - NETWORK=POE
       - SUBNETWORK=Polygon Hermez
-      - COIN=ETH
+      - COIN=RNT
       - ETHEREUM_JSONRPC_VARIANT=geth
-      - ETHEREUM_JSONRPC_HTTP_URL=http://zkevm-explorer-json-rpc:8124
+      - ETHEREUM_JSONRPC_HTTP_URL
       - DATABASE_URL=postgres://l2_explorer_user:l2_explorer_password@zkevm-explorer-l2-db:5432/l2_explorer_db
       - ECTO_USE_SSL=false
       - MIX_ENV=prod
@@ -288,6 +313,45 @@ services:
       - "-c"
       - "mix do ecto.create, ecto.migrate; mix phx.server"
 
+  zkevm-explorer-l2-proxy:
+    image: openresty/openresty:alpine-fat
+    container_name: zkevm-explorer-l2-proxy
+    hostname: zkevm-explorer-l2-proxy
+    restart: on-failure:5
+    networks:
+      explorer_proxy:
+        ipv4_address: 10.10.40.11
+      inet:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "./config/nginx/templates:/etc/nginx/templates:ro"
+      - "./config/nginx/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro"
+      - "./config/nginx/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro"
+      - "./config/nginx/snippets:/etc/nginx/snippets:ro"
+      - "./nginx_logs/nginx:/var/log/openresty:rw"
+      - "nginx-dynamic-conf:/etc/nginx/dynamic-conf:rw"
+    tmpfs:
+      - /run
+      - /var/run
+      - /tmp
+    environment:
+      - NGINX_CERT
+      - NGINX_CERT_KEY
+      - NGINX_DOMAIN
+      - NGINX_HTPASSWD
+      - EXPLORER_NET_IP_ADDRESS
+      - EXPLORER_NET_UI_PORT
+    entrypoint: [ "/usr/local/bin/entrypoint.sh" ]
+    command: [ "/usr/local/openresty/bin/openresty", "-g", "daemon off;" ]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "512m"
+        max-file: "4"
+
+
   zkevm-explorer-json-rpc:
     container_name: zkevm-explorer-json-rpc
     image: zkevm-node
@@ -295,8 +359,10 @@ services:
       - 8124:8124
       - 8134:8134 # needed if WebSockets enabled
     environment:
-      - ZKEVM_NODE_STATE_DB_HOST=zkevm-state-db
-      - ZKEVM_NODE_POOL_DB_HOST=zkevm-pool-db
+      - ZKEVM_NODE_STATE_DB_HOST=10.0.9.64
+      - ZKEVM_NODE_POOL_DB_HOST=10.0.9.64
+#       - ZKEVM_NODE_STATE_DB_HOST=zkevm-state-db
+#       - ZKEVM_NODE_POOL_DB_HOST=zkevm-pool-db
       - ZKEVM_NODE_RPC_PORT=8124
       - ZKEVM_NODE_RPC_WEBSOCKETS_PORT=8134
     volumes:
@@ -506,3 +572,23 @@ services:
       - "postgres"
       - "-N"
       - "500"
+
+  nh-node:
+    image: horizenlabs/nh-node:${NH_NODE_VERSION}
+    env_file:
+      - .env
+    container_name: nh-node${NH_NODE_TYPE}
+    hostname: nh-node${NH_NODE_TYPE}
+    restart: on-failure:5
+    ports:
+      - "${NH_NODE_NET_P2P_PORT}:${NH_NODE_NET_P2P_PORT}"
+    expose:
+      - "${NH_NODE_NET_RPC_WS_PORT}"
+    volumes:
+      - nh-node-data:/data
+      - ./config/nh-node:/data/config
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "512m"
+        max-file: "4"

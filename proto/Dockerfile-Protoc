@@ -1,0 +1,7 @@
+# CONTAINER FOR BUILDING PROTOBUF GRPC SOURCE FILES
+FROM golang:1.19
+
+WORKDIR /usr/src/
+
+RUN apt update && apt install -y protoc-gen-go protoc-gen-go-grpc
+ENTRYPOINT ["proto/make_inside_docker.sh", "/usr/src"]

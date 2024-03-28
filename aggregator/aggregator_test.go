@@ -14,6 +14,7 @@ import (
 	configTypes "github.com/0xPolygonHermez/zkevm-node/config/types"
 	ethmanTypes "github.com/0xPolygonHermez/zkevm-node/etherman/types"
 	"github.com/0xPolygonHermez/zkevm-node/ethtxmanager"
+	"github.com/0xPolygonHermez/zkevm-node/nhconnector"
 	"github.com/0xPolygonHermez/zkevm-node/state"
 	"github.com/0xPolygonHermez/zkevm-node/test/testutils"
 	"github.com/ethereum/go-ethereum/common"
@@ -190,7 +191,7 @@ func TestSendFinalProof(t *testing.T) {
 			stateMock := mocks.NewStateMock(t)
 			ethTxManager := mocks.NewEthTxManager(t)
 			etherman := mocks.NewEtherman(t)
-			a, err := New(cfg, stateMock, ethTxManager, etherman)
+			a, err := New(cfg, stateMock, ethTxManager, etherman, nhconnector.NHConnector{})
 			require.NoError(err)
 			a.ctx, a.exit = context.WithCancel(context.Background())
 			m := mox{
@@ -685,7 +686,7 @@ func TestTryAggregateProofs(t *testing.T) {
 			ethTxManager := mocks.NewEthTxManager(t)
 			etherman := mocks.NewEtherman(t)
 			proverMock := mocks.NewProverMock(t)
-			a, err := New(cfg, stateMock, ethTxManager, etherman)
+			a, err := New(cfg, stateMock, ethTxManager, etherman, nhconnector.NHConnector{})
 			require.NoError(err)
 			aggregatorCtx := context.WithValue(context.Background(), "owner", "aggregator") //nolint:staticcheck
 			a.ctx, a.exit = context.WithCancel(aggregatorCtx)
@@ -958,7 +959,7 @@ func TestTryGenerateBatchProof(t *testing.T) {
 			ethTxManager := mocks.NewEthTxManager(t)
 			etherman := mocks.NewEtherman(t)
 			proverMock := mocks.NewProverMock(t)
-			a, err := New(cfg, stateMock, ethTxManager, etherman)
+			a, err := New(cfg, stateMock, ethTxManager, etherman, nhconnector.NHConnector{})
 			require.NoError(err)
 			aggregatorCtx := context.WithValue(context.Background(), "owner", "aggregator") //nolint:staticcheck
 			a.ctx, a.exit = context.WithCancel(aggregatorCtx)
@@ -1235,7 +1236,7 @@ func TestTryBuildFinalProof(t *testing.T) {
 			ethTxManager := mocks.NewEthTxManager(t)
 			etherman := mocks.NewEtherman(t)
 			proverMock := mocks.NewProverMock(t)
-			a, err := New(cfg, stateMock, ethTxManager, etherman)
+			a, err := New(cfg, stateMock, ethTxManager, etherman, nhconnector.NHConnector{})
 			require.NoError(err)
 			aggregatorCtx := context.WithValue(context.Background(), "owner", "aggregator") //nolint:staticcheck
 			a.ctx, a.exit = context.WithCancel(aggregatorCtx)
@@ -1365,7 +1366,7 @@ func TestIsSynced(t *testing.T) {
 			ethTxManager := mocks.NewEthTxManager(t)
 			etherman := mocks.NewEtherman(t)
 			proverMock := mocks.NewProverMock(t)
-			a, err := New(cfg, stateMock, ethTxManager, etherman)
+			a, err := New(cfg, stateMock, ethTxManager, etherman, nhconnector.NHConnector{})
 			require.NoError(err)
 			aggregatorCtx := context.WithValue(context.Background(), "owner", "aggregator") //nolint:staticcheck
 			a.ctx, a.exit = context.WithCancel(aggregatorCtx)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/0xPolygonHermez/zkevm-node/hex"
 	"github.com/0xPolygonHermez/zkevm-node/log"
+	substrateTypes "github.com/centrifuge/go-substrate-rpc-client/v4/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/jackc/pgx/v4"
@@ -218,6 +219,35 @@ func (p *PostgresStorage) GetLatestGlobalExitRoot(ctx context.Context, maxBlockN
 		return GlobalExitRoot{}, time.Time{}, err
 	}
 	return exitRoot, receivedAt, nil
+}
+
+// AddAttestationId adds a new attestation Id to the db
+func (p *PostgresStorage) AddAttestationId(ctx context.Context, attestation *AttestationId, dbTx pgx.Tx) error {
+	const addAttestationIdSQL = "INSERT INTO state.attestation_id (block_num, attestation_id) VALUES ($1, $2) ON CONFLICT (attestation_id) DO NOTHING"
+
+	e := p.getExecQuerier(dbTx)
+	_, err := e.Exec(ctx, addAttestationIdSQL, attestation.BlockNumber, attestation.AttestationId)
+	return err
+}
+
+// IsAttestationPublishedOnL1 checks if the attestation id is already published on the L1
+func (p *PostgresStorage) IsAttestationPublishedOnL1(ctx context.Context, attestationId substrateTypes.U64, dbTx pgx.Tx) (bool, error) {
+	const query = `SELECT EXISTS (SELECT 1 FROM state.attestation_id WHERE attestation_id = $1)`
+	e := p.getExecQuerier(dbTx)
+	var exists bool
+	err := e.QueryRow(ctx, query, attestationId).Scan(&exists)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return exists, err
+	}
+	return exists, nil
+}
+
+// DeletePublishedAttestationIds deletes from the storage the aready processed attestation ids
+func (p *PostgresStorage) DeletePublishedAttestationIds(ctx context.Context, attestationId substrateTypes.U64, dbTx pgx.Tx) error {
+	const query = "DELETE FROM state.attestation_id WHERE attestation_id >= $1"
+	e := p.getExecQuerier(dbTx)
+	_, err := e.Exec(ctx, query, attestationId)
+	return err
 }
 
 // GetNumberOfBlocksSinceLastGERUpdate gets number of blocks since last global exit root update
@@ -815,6 +845,18 @@ func scanForcedBatch(row pgx.Row) (ForcedBatch, error) {
 	forcedBatch.GlobalExitRoot = common.HexToHash(gerStr)
 	forcedBatch.Sequencer = common.HexToAddress(coinbaseStr)
 	return forcedBatch, nil
+}
+
+func scanAttestationId(row pgx.Row) (AttestationId, error) {
+	attestationId := AttestationId{}
+	var id substrateTypes.U64
+	if err := row.Scan(
+		&attestationId.BlockNumber,
+		&id,
+	); err != nil {
+		return attestationId, err
+	}
+	return attestationId, nil
 }
 
 // GetEncodedTransactionsByBatchNumber returns the encoded field of all
