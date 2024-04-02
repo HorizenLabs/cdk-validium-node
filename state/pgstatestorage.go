@@ -244,7 +244,7 @@ func (p *PostgresStorage) IsAttestationPublishedOnL1(ctx context.Context, attest
 
 // DeletePublishedAttestationIds deletes from the storage the aready processed attestation ids
 func (p *PostgresStorage) DeletePublishedAttestationIds(ctx context.Context, attestationId substrateTypes.U64, dbTx pgx.Tx) error {
-	const query = "DELETE FROM state.attestation_id WHERE attestation_id >= $1"
+	const query = "DELETE FROM state.attestation_id WHERE attestation_id <= $1"
 	e := p.getExecQuerier(dbTx)
 	_, err := e.Exec(ctx, query, attestationId)
 	return err
