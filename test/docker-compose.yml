@@ -582,6 +582,7 @@ services:
     restart: on-failure:5
     ports:
       - "${NH_NODE_NET_P2P_PORT}:${NH_NODE_NET_P2P_PORT}"
+      - "${NH_NODE_NET_PROMETHEUS_PORT}:${NH_NODE_NET_PROMETHEUS_PORT}"
     expose:
       - "${NH_NODE_NET_RPC_WS_PORT}"
     volumes:
